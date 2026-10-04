@@ -151,6 +151,53 @@ def _no_transform_needed(annotation: type) -> bool:
     return annotation == float or annotation == int
 
 
+@lru_cache(maxsize=8096)
+def _annotation_has_transform(annotation: type) -> bool:
+    """Return whether ``annotation`` contains an alias or formatting directive.
+
+    Most request fields are already JSON-compatible dictionaries and do not use
+    ``PropertyInfo``. Knowing that up front lets the recursive transformer avoid
+    walking large lists of plain request items just to return them unchanged.
+    Discriminators are intentionally ignored: they affect response parsing, not
+    request serialization.
+    """
+    if is_required_type(annotation) or is_not_required_type(annotation):
+        args = get_args(annotation)
+        return bool(args) and _annotation_has_transform(cast(type, args[0]))
+
+    if is_annotated_type(annotation):
+        args = get_args(annotation)
+        if any(
+            isinstance(metadata, PropertyInfo) and (metadata.alias is not None or metadata.format is not None)
+            for metadata in args[1:]
+        ):
+            return True
+        return bool(args) and _annotation_has_transform(cast(type, args[0]))
+
+    if is_typeddict(annotation):
+        try:
+            return any(
+                _annotation_has_transform(cast(type, field))
+                for field in get_type_hints(annotation, include_extras=True).values()
+            )
+        except (NameError, TypeError):
+            # Unresolved forward references take the safe, existing path.
+            return True
+
+    return any(_annotation_has_transform(cast(type, arg)) for arg in get_args(annotation))
+
+
+def _can_skip_transform(data: object) -> bool:
+    """Return whether ``data`` is already composed of JSON-compatible values."""
+    if data is None or isinstance(data, (bool, int, float, str)):
+        return True
+    if is_mapping(data):
+        return all(isinstance(key, str) and _can_skip_transform(value) for key, value in data.items())
+    if isinstance(data, list):
+        return all(_can_skip_transform(value) for value in data)
+    return False
+
+
 def _transform_recursive(
     data: object,
     *,
@@ -177,9 +224,13 @@ def _transform_recursive(
     stripped_type = strip_annotated_type(inner_type)
     origin = get_origin(stripped_type) or stripped_type
     if is_typeddict(stripped_type) and is_mapping(data):
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
+            return data
         return _transform_typeddict(data, stripped_type)
 
     if origin == dict and is_mapping(data):
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
+            return data
         args = get_args(stripped_type)
         items_type = args[1] if len(args) > 1 else object
         return {key: _transform_recursive(value, annotation=items_type) for key, value in data.items()}
@@ -204,6 +255,11 @@ def _transform_recursive(
             # perf boost from skipping that work.
             #
             # but we still need to convert to a list to ensure the data is json-serializable
+            if is_list(data):
+                return data
+            return list(data)
+
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
             if is_list(data):
                 return data
             return list(data)
@@ -345,9 +401,13 @@ async def _async_transform_recursive(
     stripped_type = strip_annotated_type(inner_type)
     origin = get_origin(stripped_type) or stripped_type
     if is_typeddict(stripped_type) and is_mapping(data):
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
+            return data
         return await _async_transform_typeddict(data, stripped_type)
 
     if origin == dict and is_mapping(data):
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
+            return data
         args = get_args(stripped_type)
         items_type = args[1] if len(args) > 1 else object
         return {key: _transform_recursive(value, annotation=items_type) for key, value in data.items()}
@@ -372,6 +432,11 @@ async def _async_transform_recursive(
             # perf boost from skipping that work.
             #
             # but we still need to convert to a list to ensure the data is json-serializable
+            if is_list(data):
+                return data
+            return list(data)
+
+        if not _annotation_has_transform(stripped_type) and _can_skip_transform(data):
             if is_list(data):
                 return data
             return list(data)

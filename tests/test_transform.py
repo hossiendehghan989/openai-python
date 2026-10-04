@@ -526,3 +526,27 @@ async def test_not_required_transforms(use_async: bool) -> None:
     assert await transform({"items": [{"this_thing": 1}]}, DateDictWithNotRequiredAlias, use_async) == {
         "items": [{"this__thing": 1}]
     }
+
+
+class PlainTransformItem(TypedDict):
+    role: str
+    content: str
+
+
+class PlainTransformBody(TypedDict):
+    input: List[PlainTransformItem]
+    tools: List[Dict[str, object]]
+
+
+@parametrize
+@pytest.mark.asyncio
+async def test_skips_traversal_for_plain_request_data(use_async: bool) -> None:
+    body: PlainTransformBody = {
+        "input": [{"role": "user", "content": "hello"}],
+        "tools": [{"type": "function", "name": "lookup"}],
+    }
+
+    result = await transform(body, PlainTransformBody, use_async)
+
+    assert result is body
+    assert result == body
