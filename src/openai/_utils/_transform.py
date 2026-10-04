@@ -108,6 +108,9 @@ def transform(
 
     It should be noted that the transformations that this function does are not represented in the type system.
     """
+    if is_mapping(data) and not _annotation_has_transform(cast(type, expected_type)):
+        return data
+
     transformed = _transform_recursive(data, annotation=cast(type, expected_type))
     return cast(_T, transformed)
 
@@ -149,6 +152,36 @@ def _maybe_transform_key(key: str, type_: type) -> str:
 
 def _no_transform_needed(annotation: type) -> bool:
     return annotation == float or annotation == int
+
+
+@lru_cache(maxsize=8096)
+def _annotation_has_transform(annotation: type) -> bool:
+    """Return whether an annotation tree contains metadata requiring traversal."""
+    if isinstance(annotation, type) and issubclass(annotation, pydantic.BaseModel):
+        return True
+
+    annotated_type = _get_annotated_type(annotation)
+    if annotated_type is not None:
+        annotations = get_args(annotated_type)
+        if any(
+            isinstance(metadata, PropertyInfo) and (metadata.alias is not None or metadata.format is not None)
+            for metadata in annotations[1:]
+        ):
+            return True
+        return _annotation_has_transform(cast(type, annotations[0]))
+
+    stripped_type = strip_annotated_type(annotation)
+    if is_typeddict(stripped_type):
+        try:
+            annotations = _get_type_hints(stripped_type, include_extras=True)
+        except Exception:
+            return True
+        return any(_annotation_has_transform(cast(type, type_)) for type_ in annotations.values())
+
+    if stripped_type in (dict, list):
+        return True
+
+    return any(arg is not type(None) and _annotation_has_transform(cast(type, arg)) for arg in get_args(stripped_type))
 
 
 def _transform_recursive(
@@ -315,6 +348,9 @@ async def async_transform(
 
     It should be noted that the transformations that this function does are not represented in the type system.
     """
+    if is_mapping(data) and not _annotation_has_transform(cast(type, expected_type)):
+        return data
+
     transformed = await _async_transform_recursive(data, annotation=cast(type, expected_type))
     return cast(_T, transformed)
 

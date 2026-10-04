@@ -41,6 +41,25 @@ class Foo1(TypedDict):
     foo_bar: Annotated[str, PropertyInfo(alias="fooBar")]
 
 
+class PlainTransformItem(TypedDict):
+    role: str
+    content: str
+
+
+class PlainTransformBody(TypedDict):
+    input: List[PlainTransformItem]
+
+
+@parametrize
+@pytest.mark.asyncio
+async def test_plain_json_transform_skips_recursive_walk(use_async: bool) -> None:
+    body: PlainTransformBody = {
+        "input": [{"role": "user", "content": "hello"}],
+    }
+
+    assert await transform(body, expected_type=PlainTransformBody, use_async=use_async) is body
+
+
 @parametrize
 @pytest.mark.asyncio
 async def test_top_level_alias(use_async: bool) -> None:
